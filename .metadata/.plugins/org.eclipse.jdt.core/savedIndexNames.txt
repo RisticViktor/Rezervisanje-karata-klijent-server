@@ -1,0 +1,5 @@
+INDEX VERSION 1.131+C:\Users\Asus i5\Desktop\RMT JAVA Domaci2\.metadata\.plugins\org.eclipse.jdt.core
+2421887700.index
+1397735011.index
+1865797976.index
+3957562867.index

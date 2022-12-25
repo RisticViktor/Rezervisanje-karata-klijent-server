@@ -1,0 +1,79 @@
+package klijent;
+
+import java.io.*;
+import java.net.*;
+
+public class Klijent implements Runnable{
+	
+	static Socket soketZaKomunikaciju = null;
+	 
+	static PrintStream outputKlijenta = null;
+	static BufferedReader inputServera = null;
+	 
+	static BufferedReader konzolniUlaz = null;
+	
+	static boolean krajSesije = false;
+	
+	
+	public static void main(String[] args) {
+		try {
+			soketZaKomunikaciju = new Socket("localhost",8090);
+			
+			outputKlijenta = new PrintStream(soketZaKomunikaciju.getOutputStream());
+			inputServera = new BufferedReader(new InputStreamReader(soketZaKomunikaciju.getInputStream()));
+			konzolniUlaz = new BufferedReader(new InputStreamReader(System.in));
+			
+			new Thread(new Klijent()).start();
+			
+			while(!krajSesije) {
+				outputKlijenta.println(konzolniUlaz.readLine());
+			}
+			
+			soketZaKomunikaciju.close();
+			
+		} catch (UnknownHostException e) {
+			e.printStackTrace();
+		} 
+			catch(ConnectException e) {
+			System.out.println("Server trenutno ne radi! Pokusajte kasnije");
+		}
+		catch(SocketException e) {
+			System.out.println("Server se iznenadno ugasio! Pokusajte kasnije");
+		}
+			catch (IOException e) {
+			e.printStackTrace();
+		} 
+	}
+
+	@Override
+	public void run() {
+		try {
+			String linijaOdServera;
+			while ((linijaOdServera = inputServera.readLine()) != null) {
+				System.out.println(linijaOdServera);
+				if(linijaOdServera.startsWith("SESIJA JE ZAVRSENA")) {
+					krajSesije = true;
+					return;
+				}
+				
+				if(linijaOdServera.contains("Poslate su i informacije")) {
+					int brojRezervacije = Integer.parseInt(inputServera.readLine());
+					FileWriter rezervacijaIN = new FileWriter("src/klijent/rezervacija" + brojRezervacije + ".txt", false);
+					String linijaZaFajl;
+					while(!((linijaZaFajl = inputServera.readLine()).contains("KRAJ REZERVACIJE"))) {
+						rezervacijaIN.write(linijaZaFajl + "\n");
+					}
+					rezervacijaIN.close();
+				}
+			}
+		} 
+		catch(SocketException e) {
+			System.out.println("Server se iznenadno ugasio! Pokusajte kasnije");
+			krajSesije = true;
+			return;
+		}
+		catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+}

@@ -1,0 +1,822 @@
+package server;
+
+import java.io.*;
+import server.*;
+import java.net.*;
+import java.util.GregorianCalendar;
+import java.util.LinkedList;
+
+
+public class Server extends Thread{
+	
+	Socket soketZaKomunikaciju;
+	BufferedReader inputKlijenta;
+	PrintStream outputServera;
+	
+	static int brojPovezanihKorisnika = 0;
+	LinkedList<RegistrovanKorisnik> registrovaniKorisnici = new LinkedList<>();
+	LinkedList<Rezervacija> rezervacijeObicne = new LinkedList<>();
+	LinkedList<Rezervacija> rezervacijeVIP = new LinkedList<>();
+	final int UKUPNO_REZERVACIJA_OBICNE = 20;
+	final int UKUPNO_REZERVACIJA_VIP = 5;
+	
+	int preostaloObicnihKarata;
+	int preostaloVIPKarata;
+	
+	public Server(Socket soketZaKomunikaciju) {
+		this.soketZaKomunikaciju = soketZaKomunikaciju;
+		start();
+	}
+
+	public static void main(String[] args) throws Exception {
+		System.out.println("Server je poceo sa radom i osluskuje na portu 8090..");
+		
+		ServerSocket serverSocket = new ServerSocket(8090);
+		while(true) {
+			new Server(serverSocket.accept());
+			brojPovezanihKorisnika++;
+			System.out.println("\nPrihvacen zahtev od korisnika " + brojPovezanihKorisnika);
+		}
+	}
+	
+	@Override
+	public void run() {
+//		Ulazno-izlazni tokovi
+		try {
+			inputKlijenta = new BufferedReader(new InputStreamReader(soketZaKomunikaciju.getInputStream()));
+			outputServera = new PrintStream(soketZaKomunikaciju.getOutputStream());
+			
+			boolean registrovanKorisnik = false;
+			boolean zavrsenaSesija = false;
+			RegistrovanKorisnik trenutniKorisnik = null;
+			
+			outputServera.println("Uspesno ste se povezali na server\n\n");
+			
+			deserializujPodatke();
+			
+
+			int brojRezervisanihKarataPoKlijentu = 0;
+			while(true && !zavrsenaSesija) {
+				preostaloObicnihKarata = UKUPNO_REZERVACIJA_OBICNE - rezervacijeObicne.size();
+				preostaloVIPKarata = UKUPNO_REZERVACIJA_VIP - rezervacijeVIP.size();
+				
+				if(registrovanKorisnik) {
+					String odgovorKlijenta = registrovanKorisnikMeni(trenutniKorisnik.getIme());
+					
+					switch(odgovorKlijenta) {
+					case "1":
+						odgovorPreostaloKarataRegistrovan();
+						break;
+					case "2":
+						if(brojRezervisanihKarataPoKlijentu < 4) {
+							if(rezervacijaKarataRegistrovani(trenutniKorisnik)) {
+								brojRezervisanihKarataPoKlijentu++;
+								outputServera.println("\nRezervisanih do sada: " + brojRezervisanihKarataPoKlijentu);
+								
+								serializujPodatke();
+							}
+						}
+						break;
+					case "3":
+						opcijeMojeRezervacije(trenutniKorisnik.getEmail());
+						break;
+					case "4":
+						boolean uspesnaOdjava = false;
+						while(!uspesnaOdjava) {
+							outputServera.println("\nDa li ste sigurni(da/ne):");
+							String reply = inputKlijenta.readLine().toLowerCase();
+							switch(reply) {
+							case "da":
+								outputServera.println("\nUSPESNO STE SE ODJAVILI");
+								registrovanKorisnik = false;
+								trenutniKorisnik = null;
+								uspesnaOdjava = true;
+								break;
+							case "ne":
+								uspesnaOdjava = true;
+								break;
+							default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+							}
+						}
+						
+						break;
+					case "5" :
+						zavrsenaSesija = true;
+						break;
+					default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+					}
+				}
+				else {
+					String odgovorKlijenta = guestMeni();
+					
+					switch(odgovorKlijenta) {
+					case "1" :
+						odgovorPreostaloKarata();
+						
+						break;
+					case "2" :
+						if(brojRezervisanihKarataPoKlijentu < 4) {
+							
+							if(rezervacijaKarata(TipKarte.OBICNA_KARTA)) {
+								brojRezervisanihKarataPoKlijentu++;
+								outputServera.println("\nRezervisanih do sada: " + brojRezervisanihKarataPoKlijentu);
+								
+								serializujPodatke();
+							}
+						}
+						else {
+							outputServera.println("\nNije moguce rezervisanje vise od 4 karte po korisniku");
+						}
+							
+							break;
+					case "3" : 
+						trenutniKorisnik = registrujKorisnika();
+						if(trenutniKorisnik != null)
+							registrovanKorisnik = true;	
+							
+						serializujPodatke();
+							
+						break;
+					case "4" :
+						trenutniKorisnik = prijaviKorisnika();
+						if(trenutniKorisnik != null)
+						registrovanKorisnik = true;
+						
+						break;
+					case "5" :
+						zavrsenaSesija = true;
+						break;
+					default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+					}
+				}
+				if(!zavrsenaSesija) {
+					outputServera.println("\n\nPritisnite ENTER za povratak na meni\n");
+					inputKlijenta.readLine();
+				}
+			}
+			
+			zavrsiSesiju();
+			
+			
+		} 
+		catch(ConnectException e) {
+			System.out.println("Korisnik se iznenando izlogovao");
+		}
+		catch (IOException e) {
+			e.printStackTrace();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	private boolean ispravanJMBG(String jmbg) {
+		if(jmbg.toLowerCase().contains("/quit")) {
+			try {
+				zavrsiSesiju();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			return false;
+		}
+		
+		if(jmbg.length() != 13) {
+			return false;
+		}
+		
+		for(int i = 0; i < 13; i++){
+			if(jmbg.charAt(i) >= '0' && jmbg.charAt(i) <= '9')
+				continue;
+			else
+				return false;
+		}
+		return true;
+	}
+	
+	private boolean ispravnoImePrezime(String unetString) {
+		String[] niz = unetString.split(" ");
+		for(int i = 0; i < niz.length; i++) {
+			for(int j = 0; j < niz[i].length(); j++) {
+				if(Character.isLetter(niz[i].charAt(j)))
+					continue;
+				else
+					return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	private boolean ispravanEmail(String email) {
+		if(email.contains("@") && email.lastIndexOf(".") > email.indexOf("@"))
+			return true;
+		else
+			return false;
+	}
+	
+	private boolean ispravanPassword(String password) {
+		if(password.length() < 8)
+			return false;
+		
+		boolean sadrziBroj = false;
+		boolean sadrziSlovo = false;
+		boolean sadrziVelikoSlovo = false;
+		for(int i = 0; i < password.length(); i++) {
+			if(Character.isDigit(password.charAt(i)))
+				sadrziBroj = true;
+			
+			if(Character.isLetter(password.charAt(i))) {
+				sadrziSlovo = true;
+			}
+			
+			if(Character.isUpperCase(password.charAt(i))) {
+				sadrziVelikoSlovo = true;
+			}
+		}
+		
+		if(sadrziBroj && sadrziSlovo && sadrziVelikoSlovo)
+			return true;
+		else
+			return false;
+	}
+
+	private boolean ispravanUsername(String username) {
+		if(username.length() < 3)
+			return false;
+		
+		for(int i = 0; i < username.length(); i++) {
+			if(username.charAt(i) == ' ')
+				return false;
+		}
+		
+		return true;
+	}
+
+	private boolean postojiUsername(String username) {
+		for(RegistrovanKorisnik korisnik : registrovaniKorisnici) {
+			if(korisnik != null && korisnik.getUsername().equals(username))
+				return true;
+		}
+		
+		return false;
+	}	
+	private boolean postojiEmail(String email) {
+		for(RegistrovanKorisnik korisnik : registrovaniKorisnici) {
+			if(korisnik != null && korisnik.getEmail().equals(email))
+				return true;
+		}
+		
+		return false;
+	}	
+	private boolean postojiJMBG(String jmbg) {
+		for(RegistrovanKorisnik korisnik : registrovaniKorisnici) {
+			if(korisnik != null && korisnik.getJmbg().equals(jmbg))
+				return true;
+		}
+		
+		return false;
+	}
+	
+	private RegistrovanKorisnik nadjiKorisnika(String username) {
+		
+		for(int i = 0; i < registrovaniKorisnici.size(); i++) {
+			if(registrovaniKorisnici.get(i).getUsername().equals(username))
+				return registrovaniKorisnici.get(i);
+		}
+		
+		return null;
+	}
+
+	private void serializujPodatke() {
+		try {
+			ObjectOutputStream korisniciOUT = new ObjectOutputStream(new BufferedOutputStream(new FileOutputStream("src/server/registrovaniKorisnici.binary")));
+			ObjectOutputStream rezervacijeOUT = new ObjectOutputStream(new BufferedOutputStream(new FileOutputStream("src/server/rezervacije.binary")));
+			
+			for(int i = 0; i < registrovaniKorisnici.size();i++) {
+				korisniciOUT.writeObject(registrovaniKorisnici.get(i));
+			}
+			
+			for(int i = 0; i < rezervacijeObicne.size();i++) {
+				rezervacijeOUT.writeObject(rezervacijeObicne.get(i));
+			}
+			
+			for(int i = 0; i < rezervacijeVIP.size(); i++) {
+				rezervacijeOUT.writeObject(rezervacijeVIP.get(i));
+			}
+			
+			korisniciOUT.close();
+			rezervacijeOUT.close();
+		}catch(Exception e) {
+			
+		}
+	}
+	
+	private void deserializujPodatke() {
+		try {
+			ObjectInputStream korisniciIN = new ObjectInputStream(new BufferedInputStream(new FileInputStream("src/server/registrovaniKorisnici.binary")));
+			ObjectInputStream rezervacijeIN = new ObjectInputStream(new BufferedInputStream(new FileInputStream("src/server/rezervacije.binary")));
+			
+			
+			registrovaniKorisnici.clear();
+			rezervacijeObicne.clear();
+			rezervacijeVIP.clear();
+			
+			try {
+				while(true) {
+					RegistrovanKorisnik rk = (RegistrovanKorisnik)(korisniciIN.readObject());
+					if(rk != null && !registrovaniKorisnici.contains(rk))
+					registrovaniKorisnici.add(rk);
+				}
+			} catch (EOFException e) {}
+			
+			try {
+				while(true) {
+					Rezervacija rok = (Rezervacija)(rezervacijeIN.readObject());
+					if(rok != null && !rezervacijeObicne.contains(rok)) {
+						if(rok.getTipKarte().equals(TipKarte.OBICNA_KARTA))
+							rezervacijeObicne.add(rok);
+						else
+							rezervacijeVIP.add(rok);
+					}
+					
+				}
+			} catch (EOFException e) {}
+			
+			korisniciIN.close();
+			rezervacijeIN.close();
+		}catch(Exception e) {
+			
+		}
+	}
+	
+	private String guestMeni() throws Exception {
+		String pocetniMeni = "============================================================\n"
+				+ "\t\t\tDOBRODOSLI"
+				+ "\n\n\t\t\tPOCETNI MENI\n\n"
+				+ "1.Broj preostalih karata\n"
+				+ "2.Rezervacija karata\n"
+				+ "3.Registracija\n"
+				+ "4.Prijavljivanje\n"
+				+ "5.Izlaz iz aplikacije\n\n"
+				+ "UNESITE BROJ ZELJENE OPCIJE(1-5):";
+		
+			outputServera.println(pocetniMeni);
+			
+			return inputKlijenta.readLine();
+	}
+
+	private String registrovanKorisnikMeni(String imeKorisnika) throws Exception {
+		String pocetniMeni = "============================================================\n"
+				+ "\t\t\tDOBRODOSLI " + imeKorisnika.toUpperCase()
+				+ "\n\n\t\t\tPOCETNI MENI\n\n"
+				+ "1.Broj preostalih karata\n"
+				+ "2.Rezervacija karata\n"
+				+ "3.Moje rezervacije\n"
+				+ "4.Odjavite se\n"
+				+ "5.Izlaz iz aplikacije\n\n"
+				+ "UNESITE BROJ ZELJENE OPCIJE(1-5):";
+		
+			outputServera.println(pocetniMeni);
+			
+			return inputKlijenta.readLine();
+	}
+	private void zavrsiSesiju() throws IOException {
+		outputServera.println("SESIJA JE ZAVRSENA");
+		System.out.println("Korisnik je zavrsio svoju sesiju");
+		soketZaKomunikaciju.close();
+		brojPovezanihKorisnika--;
+		serializujPodatke();
+	}
+	private void odgovorPreostaloKarata() {
+		outputServera.println("============================================================\n");
+		if(preostaloObicnihKarata > 0) {
+			outputServera.println("\nBroj karata koji je preostao iznosi: " + preostaloObicnihKarata); 
+		}
+		else {
+			outputServera.println("\nNema vise dostupnih karata");
+		}
+	}
+	private void odgovorPreostaloKarataRegistrovan() {
+		outputServera.println("============================================================\n");
+		if(preostaloObicnihKarata > 0) {
+			outputServera.println("\nBroj obicnih karata koji je preostao iznosi: " + preostaloObicnihKarata); 
+		}
+		else {
+			outputServera.println("\nNema vise dostupnih obicnih karata");
+		}
+		if(preostaloVIPKarata > 0) {
+			outputServera.println("\nBroj VIP karata koji je preostao iznosi: " + preostaloVIPKarata);
+		}
+		else {
+			outputServera.println("\nNema vise dostupnih VIP karata");
+		}
+	}
+	private boolean rezervacijaKarata(TipKarte tipKarte) throws IOException {
+		if(preostaloObicnihKarata > 0) {
+			boolean ispravanUnos = false;
+			while(!ispravanUnos) {
+				outputServera.println("============================================================\n"
+						+ "\t\t\tREZERVACIJA KARTE(/quit za povratak na meni)\n"
+						+ "Unesite Vase ime:"); 
+				String ime = inputKlijenta.readLine();
+				if(ime.contains("/quit"))
+					return false;
+				if(!ispravnoImePrezime(ime)) {
+					outputServera.println("\nIME SME SAMO SLOVA DA SADRZI, POKUSAJTE PONOVO!");
+					continue;
+				}
+				
+				outputServera.println("Unesite Vase prezime: ");
+				String prezime = inputKlijenta.readLine();
+				if(prezime.contains("/quit"))
+					return false;
+				if(!ispravnoImePrezime(prezime)) {
+					outputServera.println("\nPREZIME SME SAMO SLOVA DA SADRZI, POKUSAJTE PONOVO!");
+					continue;
+				}
+				
+				outputServera.println("Unesite Vase JMBG: ");
+				String jmbg = inputKlijenta.readLine();
+				if(jmbg.contains("/quit"))
+					return false;
+				if(!ispravanJMBG(jmbg)) {
+					outputServera.println("\nNEISPRAVAN UNOS, JMBG SADRZI SAMO BROJEVE I DUZINE JE 13 KARATAKTERA, POKUSAJTE PONOVO!");
+					continue;
+				}
+					
+				outputServera.println("Unesite Vasu email adresu: ");
+				String email = inputKlijenta.readLine();
+				if(email.contains("/quit"))
+					return false;
+				if(!ispravanEmail(email)) {
+					outputServera.println("\nNEISPRAVAN UNOS, EMAIL MORA DA SADRZI @ I DOMEN POSLE TOGA, POKUSAJTE PONOVO!");
+					continue;
+				}
+				
+				ispravanUnos = true;
+				Rezervacija novaRezervacija = new Rezervacija(ime, prezime, jmbg, email, tipKarte);
+				rezervacijeObicne.add(novaRezervacija);
+				String tekstRezervacije = "\nREZERVACIJA br."+ (rezervacijeObicne.size() + rezervacijeVIP.size()) + "\n\n" + novaRezervacija.toString();
+				System.out.println(tekstRezervacije);
+				
+				
+				outputServera.println("\nKARTA JE USPESNO REZERVISANA");
+				
+				outputServera.println("\nPoslate su i informacije o rezervaciji u fajlu");
+				outputServera.println(rezervacijeObicne.size() + rezervacijeVIP.size());
+				outputServera.println("============================================================\n" + tekstRezervacije + "\n\nKRAJ REZERVACIJE");
+			}
+			return true;
+		}
+		else {
+			outputServera.println("\nNema vise dostupnih karata");
+			return false;
+		}
+	}
+	private RegistrovanKorisnik registrujKorisnika() throws IOException {
+		boolean uspesnaRegistracija = false;
+		while(!uspesnaRegistracija) {
+			outputServera.println("============================================================\n"
+					+ "\t\t\tREGISTRACIJA(/quit za povratak na meni)\n\n");
+			
+			outputServera.println("Username:");
+			String username = inputKlijenta.readLine();
+			if(username.contains("/quit"))
+				return null;
+			if(!ispravanUsername(username)) {
+				outputServera.println("\nNEISPRAVAN UNOS, USERNAME MORA DA BUDE DUZI OD 3 KARAKTERA I NE SME DA SADRZI RAZMAK, POKUSAJTE PONOVO! ");
+				continue;
+			}
+			if(postojiUsername(username)) {
+				outputServera.println("\nUSERNAME JE ZAUZET, POKUSAJTE NEKI DRUGI USERNAME! ");
+				continue;
+			}
+			
+			outputServera.println("Password:");
+			String password = inputKlijenta.readLine();
+			if(password.contains("/quit"))
+				return null;
+			if(!ispravanPassword(password)) {
+				outputServera.println("\nNEISPRAVAN UNOS, LOZINKA MORA DA BUDE DUZA OD 8 KARAKTERA I DA SADRZI MALO I VELIKO SLOVO, KAO I BROJ, POKUSAJTE PONOVO! ");
+				continue;
+			}
+			
+			outputServera.println("Ime:");
+			String ime = inputKlijenta.readLine();
+			if(ime.contains("/quit"))
+				return null;
+			if(!ispravnoImePrezime(ime)) {
+				outputServera.println("\nIME SME SAMO SLOVA DA SADRZI, POKUSAJTE PONOVO!");
+				continue;
+			}
+			
+			outputServera.println("Prezime:");
+			String prezime = inputKlijenta.readLine();
+			if(prezime.contains("/quit"))
+				return null;
+			if(!ispravnoImePrezime(prezime)) {
+				outputServera.println("\nPREZIME SME SAMO SLOVA DA SADRZI, POKUSAJTE PONOVO!");
+				continue;
+			}
+			
+			outputServera.println("JMBG:");
+			String jmbg = inputKlijenta.readLine();
+			if(jmbg.contains("/quit"))
+				return null;
+			if(!ispravanJMBG(jmbg)) {
+				outputServera.println("\nNEISPRAVAN UNOS, JMBG SADRZI SAMO BROJEVE I DUZINE JE 13 KARATAKTERA, POKUSAJTE PONOVO!");
+				continue;
+			}
+			if(postojiJMBG(jmbg)) {
+				outputServera.println("\nKORISNIK SA TIM JMBG-om VEC POSTOJI, POKUSAJTE OPET! ");
+				continue;
+			}
+			
+			outputServera.println("Email:");
+			String email = inputKlijenta.readLine();
+			if(email.contains("/quit"))
+				return null;
+			if(!ispravanEmail(email)) {
+				outputServera.println("\nNEISPRAVAN UNOS, EMAIL MORA DA SADRZI @ I DOMEN POSLE TOGA, POKUSAJTE PONOVO!");
+				continue;
+			}
+			if(postojiEmail(email)) {
+				outputServera.println("\nEMAIL JE VEC ISKORISCEN, POKUSAJTE NEKI DRUGI EMAIL! ");
+				continue;
+			}
+			RegistrovanKorisnik noviKorisnik = new RegistrovanKorisnik(username, password, ime, prezime, jmbg, email);
+			registrovaniKorisnici.add(noviKorisnik);
+			
+			outputServera.println("\n\nUSPESNO STE IZVRSILI REGISTRACIJU");
+			uspesnaRegistracija = true;
+			
+			return noviKorisnik;
+		}
+		
+		return null;
+	}
+	private RegistrovanKorisnik prijaviKorisnika() throws IOException{
+		while(true) {
+			outputServera.println("============================================================\n"
+					+ "\t\t\tPRIJAVLJIVANJE(/quit za povratak na meni)\n\n");
+			int brojPokusajaUsername = 3;
+			int brojPokusajaLozinka = 3;
+			while(brojPokusajaUsername > 0 && brojPokusajaLozinka > 0) {
+				outputServera.println("Username:");
+				String username = inputKlijenta.readLine();
+				if(username.contains("/quit"))
+					return null;
+				if(postojiUsername(username)) {
+					
+					
+					RegistrovanKorisnik privremeni = nadjiKorisnika(username);
+					while(brojPokusajaLozinka > 0) {
+						outputServera.println("Password:");
+						String password = inputKlijenta.readLine();
+						if(password.contains("/quit"))
+							return null;
+						if(privremeni.getPassword().equals(password)) {
+							
+							outputServera.println("\nUSPESNO STE SE PRIJAVILI");
+							return privremeni;
+						}
+						else {
+							brojPokusajaLozinka--;
+							outputServera.println("NETACNA LOZIKA\nIMATE JOS " + brojPokusajaLozinka + " POKUSAJ/A");
+							if(brojPokusajaLozinka == 0) {
+								outputServera.println("Niste uspeli da se ulogujete");
+								break;
+							}
+						}
+					}
+					
+				}
+				else {
+					brojPokusajaUsername--;
+					if(brojPokusajaUsername == 0) {
+						outputServera.println("Niste uspeli da se ulogujete");
+						break;
+					}else
+					{
+						outputServera.println("NEPOSTOJECI USERNAME\nIMATE JOS " + brojPokusajaUsername + " POKUSAJ/A");
+					}
+				}
+			}
+			if(brojPokusajaUsername == 0 || brojPokusajaLozinka == 0) {
+				return null;
+			}
+		}
+	}
+
+	private boolean rezervacijaKarataRegistrovani(RegistrovanKorisnik trenutniKorisnik) throws IOException {
+		boolean rezervisano = false;
+		while(!rezervisano) {
+			outputServera.println("============================================================\n" + 
+					"\t\t\tREZERVACIJA KARTE\n");
+			
+			outputServera.println("1. Rezervisi obicnu kartu");
+			outputServera.println("2. Rezervisi vip kartu");
+			outputServera.println("3. Povratak na meni\n");
+			
+			outputServera.println("UNESITE BROJ ZELJENE OPCIJE(1-3):");
+			
+			String odg = inputKlijenta.readLine();
+			
+			switch(odg) {
+				case "1": 
+					if(preostaloObicnihKarata > 0) {
+						boolean uspesnaRezervacija = false;
+						while(!uspesnaRezervacija) {
+							outputServera.println("============================================================\n" + 
+									"\t\t\tREZERVACIJA OBICNE KARTE\n");
+							
+							outputServera.println("1. Rezervisi kartu sa svojim podacima");
+							outputServera.println("2. Iskoristi neke druge podatke za rezervaciju");
+							outputServera.println("3. Povratak na meni\n");
+							
+							outputServera.println("UNESITE BROJ ZELJENE OPCIJE(1-3):");
+							
+							String odgovorKorisnika = inputKlijenta.readLine();
+							switch(odgovorKorisnika) {
+								case "1":
+									boolean potvrda = false;
+									while(!potvrda) {
+										outputServera.println("============================================================\n" + 
+												"\t\t\tDA LI STE SIGURNI\n");
+										
+										outputServera.println("1. DA");
+										outputServera.println("2. NE\n");
+										
+										outputServera.println("UNESITE BROJ ZELJENE OPCIJE(1-2): ");
+										
+										String potvrdaKorisnika = inputKlijenta.readLine();
+										
+										switch(potvrdaKorisnika) {
+											case "1": 
+												Rezervacija novaRezervacija = new Rezervacija(trenutniKorisnik.getIme(), trenutniKorisnik.getPrezime(), trenutniKorisnik.getJmbg(), trenutniKorisnik.getEmail(), TipKarte.OBICNA_KARTA);
+												rezervacijeObicne.add(novaRezervacija);
+												String tekstRezervacije = "\nREZERVACIJA br."+ (rezervacijeObicne.size() + rezervacijeVIP.size()) + "\n\n" + novaRezervacija.toString();
+												System.out.println(tekstRezervacije);
+												
+												outputServera.println("\n\nKARTA JE USPESNO REZERVISANA");
+												
+												outputServera.println("\nPoslate su i informacije o rezervaciji u fajlu");
+												outputServera.println(rezervacijeObicne.size() + rezervacijeVIP.size());
+												outputServera.println("============================================================\n" + tekstRezervacije + "\n\nKRAJ REZERVACIJE");
+												return true;
+											case "2": 
+												potvrda = true;
+												break;
+											default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+										}
+									}
+									break;
+								case "2":
+									return rezervacijaKarata(TipKarte.OBICNA_KARTA);
+								case "3":
+									uspesnaRezervacija = true;
+									break;
+								default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+							}
+						}
+					}
+					else {
+						outputServera.println("\nNema vise dostupnih karata");
+					}
+					break;
+					
+				case "2": 
+					if(preostaloVIPKarata > 0) {
+						boolean uspesnaRezervacija = false;
+						while(!uspesnaRezervacija) {
+							outputServera.println("============================================================\n" + 
+									"\t\t\tREZERVACIJA VIP KARTE\n");
+							
+							outputServera.println("1. Rezervisi kartu sa svojim podacima");
+							outputServera.println("2. Iskoristi neke druge podatke za rezervaciju");
+							outputServera.println("3. Povratak na meni\n");
+							
+							outputServera.println("UNESITE BROJ ZELJENE OPCIJE(1-3):");
+							
+							String odgovorKorisnika = inputKlijenta.readLine();
+							switch(odgovorKorisnika) {
+								case "1":
+									boolean potvrda = false;
+									while(!potvrda) {
+										outputServera.println("============================================================\n" + 
+												"\t\t\tDA LI STE SIGURNI\n");
+										
+										outputServera.println("1. DA");
+										outputServera.println("2. NE\n");
+										
+										outputServera.println("UNESITE BROJ ZELJENE OPCIJE(1-2): ");
+										
+										String potvrdaKorisnika = inputKlijenta.readLine();
+										
+										switch(potvrdaKorisnika) {
+											case "1": 
+												Rezervacija novaRezervacija = new Rezervacija(trenutniKorisnik.getIme(), trenutniKorisnik.getPrezime(), trenutniKorisnik.getJmbg(), trenutniKorisnik.getEmail(), TipKarte.VIP_KARTA);
+												rezervacijeVIP.add(novaRezervacija);
+												String tekstRezervacije = "\nREZERVACIJA br."+ (rezervacijeObicne.size() + rezervacijeVIP.size()) + "\n\n" + novaRezervacija.toString();
+												System.out.println(tekstRezervacije);
+												
+												outputServera.println("\n\nKARTA JE USPESNO REZERVISANA");
+												
+												outputServera.println("\nPoslate su i informacije o rezervaciji u fajlu");
+												outputServera.println(rezervacijeObicne.size() + rezervacijeVIP.size());
+												outputServera.println("============================================================\n" + tekstRezervacije + "\n\nKRAJ REZERVACIJE");
+												return true;
+											case "2": 
+												potvrda = true;
+												break;
+											default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+										}
+									}
+									break;
+								case "2":
+									return rezervacijaKarata(TipKarte.VIP_KARTA);
+								case "3":
+									uspesnaRezervacija = true;
+									break;
+								default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+							}
+						}
+					}
+					else {
+						outputServera.println("\nNema vise dostupnih VIP karata");
+					}
+					break;
+				case "3":
+					return false;
+				default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+			}
+		
+		}
+		
+		
+		return false;
+		
+	}
+
+	private void opcijeMojeRezervacije(String email) throws IOException {
+		int brojac;
+		LinkedList<Rezervacija> rezervacijeKorisnika = new LinkedList<>();
+		
+		for(int i = 0; i < rezervacijeObicne.size(); i++) {
+			if(rezervacijeObicne.get(i).getEmail().equals(email))
+				rezervacijeKorisnika.add(rezervacijeObicne.get(i));
+		}
+		
+		for(int i = 0; i < rezervacijeVIP.size(); i++) {
+			if(rezervacijeVIP.get(i).getEmail().equals(email))
+				rezervacijeKorisnika.add(rezervacijeVIP.get(i));
+		}
+		
+		if(rezervacijeKorisnika.isEmpty()) {
+			outputServera.println("Trenutno nemate nijednu rezervaciju na Vasu mejl adresu");
+			return;
+		}
+		else {
+			for(brojac = 0; brojac < rezervacijeKorisnika.size(); brojac++) {
+				outputServera.println((brojac + 1) + ". " + rezervacijeKorisnika.get(brojac) + "\n");
+			}
+			boolean uspesnaObrada = false;
+			while(!uspesnaObrada) {
+				outputServera.println("\nObrisati rezervaciju (DA/NE): ");
+				String odgovorKlijenta = inputKlijenta.readLine().toLowerCase();
+				switch(odgovorKlijenta) {
+					case "da": 
+						while(true) {
+							outputServera.println("\nUnesite broj redni broj rezervacije koju zelite da obrisete: ");
+							int brojRezervacije = Integer.parseInt(inputKlijenta.readLine());
+							if(brojRezervacije > 0 && brojRezervacije <= rezervacijeKorisnika.size()) {
+								Rezervacija izbrisanaRezervacija = rezervacijeKorisnika.remove(brojRezervacije - 1);
+								if(izbrisanaRezervacija.getTipKarte() == TipKarte.OBICNA_KARTA) {
+									rezervacijeObicne.remove(izbrisanaRezervacija);
+								}
+								else {
+									rezervacijeVIP.remove(izbrisanaRezervacija);
+								}
+								outputServera.println("\nUspesno obrisana rezervacija br." + brojRezervacije);
+								serializujPodatke();
+								uspesnaObrada = true;
+								break;
+							}
+							else {
+								outputServera.println("\nIzabrali ste nepostojeci broj rezervacije, pokusajte ponovo");
+							}
+						}
+						break;
+					case "ne":
+						return;
+					default: outputServera.println("Izabrali ste nepostojecu opciju"); break;
+				}
+			}
+			
+		}
+		
+		
+		
+		
+	}
+}
+
